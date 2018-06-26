@@ -2,93 +2,147 @@ package main
 
 import (
 	"fmt"
-	"math/rand"
-	"strconv"
+	"math"
 	"sync"
 )
 
-// maxTry defines the maximum number of hash to try before giving up
-// when adding a new URL.
-var maxTry int = 1000
+// alphabet defiens the character set used to shorten the URL (the longer
+// alphabet gets, the shorter the URLs)
+var alphabet []byte = []byte("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+var alphabetIndex []int64
+
+func init() {
+	alphabetIndex = make([]int64, 256, 256)
+	for i := range alphabetIndex {
+		alphabetIndex[i] = -1
+	}
+	for idx, c := range alphabet {
+		alphabetIndex[c] = int64(idx)
+	}
+}
+
+// MAXHASH defines the maximum number of shortened URLs the server can handle.
+var maxHash int = 10000000
+
+// From: https://golang.org/pkg/container/heap/#example__intHeap
+// An IntHeap is a min-heap of ints.
+type IntHeap []int32
+
+// An IntHeap is a min-heap of ints.
+// type IntHeap []int
+func (h IntHeap) Len() int32           { return int32(len(h)) }
+func (h IntHeap) Less(i, j int32) bool { return h[i] < h[j] }
+func (h IntHeap) Swap(i, j int32)      { h[i], h[j] = h[j], h[i] }
+
+func (h *IntHeap) Push(x interface{}) {
+	// Push and Pop use pointer receivers because they modify the slice's length,
+	// not just its contents.
+	*h = append(*h, x.(int32))
+}
+
+func (h *IntHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
 
 // HashManager maintains the relation bewteen real URLs and hashes (shortened
 // URLs). It is thread safe.
 type HashManager struct {
-	alias map[uint64]string // Maps the hashes to the URLs.
-	urls  map[string]bool   // All current URLs.
-	lock  sync.RWMutex      // Allow concurrent reads and writes.
+	alias []string        // Maps the hashes to the URLs.
+	urls  map[string]bool // All current URLs.
+	holes IntHeap         // Maintains the minimum hash that is less than len(alias) and not used.
+	lock  sync.RWMutex    // Allow concurrent reads and writes.
+}
+
+func encodeHash(hashInt int32) string {
+	if hashInt == 0 {
+		return "0"
+	}
+	base := int32(len(alphabet))
+
+	var encode func() []byte
+	encode = func() []byte {
+		if hashInt == 0 {
+			return []byte{}
+		}
+		remainder := hashInt % base
+		hashInt /= base
+		return append(encode(), alphabet[remainder])
+	}
+
+	return string(encode())
+}
+
+func decodeHash(hash string) int32 {
+	base := int64(len(alphabet))
+	var hashInt int64 = 0
+
+	for _, c := range []byte(hash) {
+		if idx := alphabetIndex[c]; idx != -1 {
+			hashInt = hashInt*base + int64(idx)
+			if hashInt > math.MaxInt32 {
+				return -1
+			}
+		} else {
+			return -1
+		}
+	}
+	return int32(hashInt)
 }
 
 // NewHashManager returns an empty, unlocked HashManager.
 func NewHashManager() HashManager {
 	return HashManager{
-		alias: make(map[uint64]string),
+		alias: []string{},
 		urls:  make(map[string]bool),
+		holes: IntHeap{},
 	}
 }
 
 // GetFromInt returns the URL mapped on an integer.
 // Error if hashInt is not known.
-func (m *HashManager) GetFromInt(hashInt uint64) (url string, err error) {
-	var ok bool
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-	m.getFromInt(hashInt)
-
-	if !ok {
-		err = fmt.Errorf("Integer Hash not found :%v.", hashInt)
-		return
+func (m *HashManager) get(hashInt int32) string {
+	if hashInt >= int32(len(m.alias)) {
+		return ""
 	}
-	return
+	return m.alias[hashInt]
 }
 
 // Get returns the URL associated with its hexadecimal hash.
 // Error if hash can't be parsed as an hexstring or the hash is not known.
 func (m *HashManager) Get(hash string) (url string, err error) {
-	var intHash uint64
-	intHash, err = strconv.ParseUint(hash, 16, 64)
+	hashInt := decodeHash(hash)
 
-	if err != nil {
-		return "", err
+	if hashInt == -1 {
+		return "", fmt.Errorf("Hash %s in invalid", hash)
 	}
 
-	return m.GetFromInt(intHash)
-}
-
-// AddEntryFromInt adds the hashInt -> url mapping.
-// Error if hashInt (or url) is already mapped.
-func (m *HashManager) AddEntryFromInt(hashInt uint64, url string) (err error) {
-	var ok bool
-	var curUrl string
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
-	if curUrl, ok = m.alias[hashInt]; ok {
-		err = fmt.Errorf("Integer hash already taken: mapped to %s.", curUrl)
-		return
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	url = m.get(hashInt)
+	if url == "" {
+		err = fmt.Errorf("Can't find hash %s.", hash)
 	}
-
-	if m.urls[url] {
-		err = fmt.Errorf("URL already taken.")
-		return
-	}
-
-	m.alias[hashInt] = url
-	m.urls[url] = true
 	return
 }
 
-// AddEntry adds the hash -> url relation.
-// Error if hash can't be parsed as an hexstring or hash (or url) is already taken.
-func (m *HashManager) AddEntry(hash, url string) (err error) {
-	var intHash uint64
-	intHash, err = strconv.ParseUint(hash, 16, 64)
-
-	if err != nil {
-		return err
+func (m *HashManager) setLowestFreeHash(url string) (hashInt int32) {
+	if len(m.holes) != 0 {
+		hashInt = m.holes.Pop().(int32)
+		m.alias[hashInt] = url
+		m.urls[url] = true
+	} else if len(m.alias) <= maxHash {
+		m.alias = append(m.alias, url)
+		hashInt = int32(len(m.alias)) - 1
+		m.urls[url] = true
+	} else {
+		hashInt = -1
 	}
-
-	return m.AddEntryFromInt(intHash, url)
+	return
 }
 
 // Add finds an available hash to be mapped to the given URL.
@@ -96,58 +150,51 @@ func (m *HashManager) AddEntry(hash, url string) (err error) {
 // Error if can't find a hash after maxTry tries to find a hash, or
 // URL is already known.
 func (m *HashManager) Add(url string) (hash string, err error) {
-	var ok bool
+	if url == "" {
+		return "", fmt.Errorf("Can't add the empty URL")
+	}
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	ok = m.urls[url]
-	if ok {
+	if ok := m.urls[url]; ok {
 		return "", fmt.Errorf("Can't add URL %s, already known", url)
 	}
 
-	var hashInt uint64 = 0
-	_, ok = m.alias[hashInt]
-	for tryCnt := 0; ok && tryCnt < maxTry; tryCnt++ {
-		hashInt = rand.Uint64()
-		_, ok = m.alias[hashInt]
+	hashInt := m.setLowestFreeHash(url)
+
+	if hashInt == -1 {
+		return "", fmt.Errorf(
+			"Can't add URL %s, reached maximum capacity of %v URLs", url, maxHash,
+		)
 	}
 
-	if ok {
-		return "", fmt.Errorf("Can't add URL %s after %v tries, the map may be too full", url, maxTry)
-	}
-
-	m.urls[url] = true
-	m.alias[hashInt] = url
-	hash = fmt.Sprintf("%X", hashInt)
+	hash = encodeHash(hashInt)
 	return
 }
 
-// DeleteFromInt removes the hashInt mapping to its URL.
-// Error if hashInt is not mapped.
-func (m *HashManager) DeleteFromInt(hashInt uint64) (err error) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	url, ok := m.alias[hashInt]
-
-	if !ok {
-		err = fmt.Errorf("Can't delete hash %v, it's not known", hashInt)
-		return
-	}
-
-	delete(m.alias, hashInt)
+func (m *HashManager) delete(hashInt int32, url string) {
+	m.alias[hashInt] = ""
 	delete(m.urls, url)
-	return
+	m.holes.Push(hashInt)
 }
 
 // Delete removes the relation from hash to its URL.
 // Error if hash can't be parsed as an hexstring or it is unknown.
 func (m *HashManager) Delete(hash string) (err error) {
-	var intHash uint64
-	intHash, err = strconv.ParseUint(hash, 16, 64)
+	hashInt := decodeHash(hash)
 
-	if err != nil {
-		return err
+	if hashInt == -1 {
+		return fmt.Errorf("Hash %s invalid", hash)
 	}
 
-	return m.DeleteFromInt(intHash)
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	url := m.get(hashInt)
+
+	if url == "" {
+		return fmt.Errorf("Can't delete hash %v, it's not known", hashInt)
+	}
+
+	m.delete(hashInt, url)
+	return
 }
