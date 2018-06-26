@@ -6,13 +6,11 @@ import (
 
 func TestGet(t *testing.T) {
 	m := HashManager{
-		alias: map[uint64]string{
-			1:  "A",
-			10: "B",
-		},
+		alias: []string{"A", "B", "", "", "", "", "", "", "", "", "C"},
 		urls: map[string]bool{
 			"A": true,
 			"B": true,
+			"C": true,
 		},
 	}
 
@@ -23,63 +21,20 @@ func TestGet(t *testing.T) {
 		t.Fatalf("1 not found when it should \n error: %v", err)
 	}
 
-	url, err = m.Get("A")
+	url, err = m.Get("a")
 	if err != nil {
 		t.Fatalf("11 not found when it should \n error: %v", err)
 	}
 
-	url, err = m.Get("H")
+	url, err = m.Get("*")
 	if err == nil {
-		t.Fatalf("H found while it is not a valid hexstring\nResponse: %v", url)
-	}
-}
-
-func TestAddEntry(t *testing.T) {
-	m := HashManager{
-		alias: map[uint64]string{
-			1: "A",
-		},
-		urls: map[string]bool{
-			"A": true,
-		},
-	}
-
-	var err error
-	err = m.AddEntry("1", "B")
-	if err == nil {
-		t.Fatalf("(1, \"B\") entry added while 1 hash already exists")
-	}
-
-	err = m.AddEntry("2", "A")
-	if err == nil {
-		t.Fatalf("(2, \"A\") entry added while \"A\" URL already exists")
-	}
-
-	err = m.AddEntry("2", "B")
-	if err != nil {
-		t.Fatalf("Couldn't add entry (2, \"B\") where it should fit")
-	}
-
-	var url string
-	url, err = m.Get("2")
-	if err != nil {
-		t.Fatalf("Couldn't get inserted url (should be \"B\").")
-	}
-	if url != "B" {
-		t.Fatalf("Returned URL is \"%s\" where it should be \"B\"", url)
-	}
-
-	err = m.AddEntry("2", "B")
-	if err == nil {
-		t.Fatalf("Added (2, \"B\") twice, was it actually inserted ?")
+		t.Fatalf("* found while it is not a valid hash\nResponse: %v", url)
 	}
 }
 
 func TestDelete(t *testing.T) {
 	m := HashManager{
-		alias: map[uint64]string{
-			1: "A",
-		},
+		alias: []string{"A"},
 		urls: map[string]bool{
 			"A": true,
 		},
@@ -91,18 +46,18 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("2 entry deleted while it was not known")
 	}
 
-	err = m.Delete("1")
+	err = m.Delete("0")
 	if err != nil {
-		t.Fatalf("1 entry wasn't deleted while it was present")
+		t.Fatalf("0 entry wasn't deleted while it was present")
 	}
 
 	var url string
-	url, err = m.Get("1")
+	url, err = m.Get("0")
 	if err == nil {
 		t.Fatalf("1 entry was found (mapped to \"%s\") after being deleted.", url)
 	}
 
-	err = m.Delete("1")
+	err = m.Delete("0")
 	if err == nil {
 		t.Fatalf("1 entry was deleted twice, was it deleted the first time ?")
 	}
@@ -110,9 +65,7 @@ func TestDelete(t *testing.T) {
 
 func TestAdd(t *testing.T) {
 	m := HashManager{
-		alias: map[uint64]string{
-			0: "A",
-		},
+		alias: []string{"A"},
 		urls: map[string]bool{
 			"A": true,
 		},
@@ -126,7 +79,7 @@ func TestAdd(t *testing.T) {
 
 	hash, err = m.Add("B")
 	if err != nil {
-		t.Fatalf("\"B\" was not added while it was now already known.")
+		t.Fatalf("\"B\" was not added even though it was not already known.")
 	}
 
 	var url string
@@ -141,5 +94,37 @@ func TestAdd(t *testing.T) {
 	hash, err = m.Add("B")
 	if err == nil {
 		t.Fatalf("\"B\" was added twice. Was it actually added the first time ?")
+	}
+}
+
+func TestAddMany(t *testing.T) {
+	m := HashManager{
+		alias: []string{},
+		urls:  map[string]bool{},
+	}
+	s := []byte{}
+	hash, err := m.Add("")
+	if err == nil {
+		t.Fatalf("Empty string was added, it should be forbiden. The returned hash was: %v", hash)
+	}
+	for i := 0; i < 100; i++ {
+		s = append(s, 'A')
+		hash, err = m.Add(string(s))
+		if err != nil {
+			t.Fatalf("%s could be added but it wasn't added before.", string(s))
+		}
+	}
+
+	if hash != "1B" {
+		t.Fatalf("The 100th created hash is %s, it should be \"1B\"", hash)
+	}
+
+	var url string
+	url, err = m.Get(hash)
+	if err != nil {
+		t.Fatalf("Can't get hash %s even though it was returned by Add", hash)
+	}
+	if url != string(s) {
+		t.Fatalf("Returned url is %s, but should be %s", url, string(s))
 	}
 }
