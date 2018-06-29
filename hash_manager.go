@@ -95,8 +95,8 @@ func decodeHash(hash string) int32 {
 }
 
 // NewHashManager returns an empty, unlocked HashManager.
-func NewHashManager() HashManager {
-	return HashManager{
+func NewHashManager() *HashManager {
+	return &HashManager{
 		alias: []string{},
 		urls:  make(map[string]bool),
 		holes: IntHeap{},

@@ -1,6 +1,6 @@
 package main
 
 func main() {
-	server := NewRestServer(routes)
-	server.Start(8080)
+	server := NewURLServer(routes)
+	server.Start(8080, 8081)
 }

@@ -15,31 +15,34 @@ import (
 // The RestServer listens and handles requests by updating the
 // Hash Manager.
 // The requests are correctly processed thanks to its own Router.
-type RestServer struct {
-	Router  *mux.Router
-	Manager HashManager
+type URLServer struct {
+	frontRouter *mux.Router
+	restRouter  *mux.Router
+	manager     *HashManager
 }
 
 // NewRestServer returns a RestServer that is able to serve on the
 // specified routes.
-func NewRestServer(routes []Route) RestServer {
-	router := mux.NewRouter().StrictSlash(true)
+func NewURLServer(routes []Route) *URLServer {
+	frontRouter := mux.NewRouter().StrictSlash(true)
+	restRouter := mux.NewRouter().StrictSlash(true)
 	manager := NewHashManager()
-	server := RestServer{
-		Router:  router,
-		Manager: manager,
+	server := &URLServer{
+		frontRouter: frontRouter,
+		restRouter:  restRouter,
+		manager:     manager,
 	}
 
 	for i, route := range routes {
 		// funcName declared inside the loop to properly bind it inside
 		// the asynchronous closure.
 		funcName := routes[i].HandlerFuncName
-		server.Router.
+		restRouter.
 			Methods(route.Method).
 			Path(route.Pattern).
 			Name(route.Name).
 			HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				reflect.ValueOf(&server).MethodByName(funcName).Call(
+				reflect.ValueOf(server).MethodByName(funcName).Call(
 					[]reflect.Value{
 						reflect.ValueOf(w),
 						reflect.ValueOf(r),
@@ -48,12 +51,21 @@ func NewRestServer(routes []Route) RestServer {
 			})
 	}
 
+	frontRouter.
+		Methods("GET").
+		Path("/{hash}").
+		Name("Redirect").
+		HandlerFunc(server.Redirect)
+
 	return server
 }
 
 // Start makes the RestServer start listening on the specified port number.
-func (s *RestServer) Start(port int) {
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%v", port), s.Router))
+func (s *URLServer) Start(frontPort int, restPort int) {
+	go func() {
+		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%v", frontPort), s.frontRouter))
+	}()
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%v", restPort), s.restRouter))
 }
 
 // writeResponse sends the request's response as json.
@@ -77,10 +89,20 @@ func handleError(w http.ResponseWriter, err error) {
 	}
 }
 
-// Get retrieves the URL corresponding to the requested hash.
-func (s *RestServer) Get(w http.ResponseWriter, r *http.Request) {
+func (s *URLServer) Redirect(w http.ResponseWriter, r *http.Request) {
 	hash := mux.Vars(r)["hash"]
-	url, err := s.Manager.Get(hash)
+	url, err := s.manager.Get(hash)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	http.Redirect(w, r, url, 301)
+}
+
+// Get retrieves the URL corresponding to the requested hash.
+func (s *URLServer) Get(w http.ResponseWriter, r *http.Request) {
+	hash := mux.Vars(r)["hash"]
+	url, err := s.manager.Get(hash)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -89,7 +111,7 @@ func (s *RestServer) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 // Add inserts the requested URL and finds an available hash for it.
-func (s *RestServer) Add(w http.ResponseWriter, r *http.Request) {
+func (s *URLServer) Add(w http.ResponseWriter, r *http.Request) {
 	var err error
 	var body []byte
 	body, err = ioutil.ReadAll(io.LimitReader(r.Body, 1048576))
@@ -114,7 +136,7 @@ func (s *RestServer) Add(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var hash string
-	hash, err = s.Manager.Add(url)
+	hash, err = s.manager.Add(url)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -123,11 +145,11 @@ func (s *RestServer) Add(w http.ResponseWriter, r *http.Request) {
 }
 
 // Delete removes the requested hash and its associated URL.
-func (s *RestServer) Delete(w http.ResponseWriter, r *http.Request) {
+func (s *URLServer) Delete(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	hash := mux.Vars(r)["hash"]
-	err = s.Manager.Delete(hash)
+	err = s.manager.Delete(hash)
 	if err != nil {
 		handleError(w, err)
 		return
