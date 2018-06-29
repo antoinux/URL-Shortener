@@ -24,6 +24,7 @@ type URLServer struct {
 // NewRestServer returns a RestServer that is able to serve on the
 // specified routes.
 func NewURLServer(routes []Route) *URLServer {
+	log.Println("Building server")
 	frontRouter := mux.NewRouter().StrictSlash(true)
 	restRouter := mux.NewRouter().StrictSlash(true)
 	manager := NewHashManager()
@@ -33,9 +34,11 @@ func NewURLServer(routes []Route) *URLServer {
 		manager:     manager,
 	}
 
+	log.Println("Routes for REST server:")
 	for i, route := range routes {
 		// funcName declared inside the loop to properly bind it inside
 		// the asynchronous closure.
+		log.Printf("Use Route %s with Method %s on Path %s", route.Name, route.Method, route.Pattern)
 		funcName := routes[i].HandlerFuncName
 		restRouter.
 			Methods(route.Method).
@@ -51,6 +54,7 @@ func NewURLServer(routes []Route) *URLServer {
 			})
 	}
 
+	log.Println("Routes for front server:")
 	frontRouter.
 		Methods("GET").
 		Path("/{hash}").
@@ -62,9 +66,11 @@ func NewURLServer(routes []Route) *URLServer {
 
 // Start makes the RestServer start listening on the specified port number.
 func (s *URLServer) Start(frontPort int, restPort int) {
+	log.Printf("Front server listening on port %v\n", frontPort)
 	go func() {
 		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%v", frontPort), s.frontRouter))
 	}()
+	log.Printf("REST server listening on port %v\n", restPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%v", restPort), s.restRouter))
 }
 
@@ -81,6 +87,7 @@ func writeResponse(w http.ResponseWriter, response string) {
 // handleError sends the error encountered during the request's processing.
 // Panics if err.Error() can't be encoded as json.
 func handleError(w http.ResponseWriter, err error) {
+	log.Printf("Error on REST server: %v", err)
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 	w.WriteHeader(422)
 	if encodeErr := json.NewEncoder(w).
@@ -91,22 +98,26 @@ func handleError(w http.ResponseWriter, err error) {
 
 func (s *URLServer) Redirect(w http.ResponseWriter, r *http.Request) {
 	hash := mux.Vars(r)["hash"]
+	log.Println("Recieved redirect request on front server ; hash = %s", hash)
 	url, err := s.manager.Get(hash)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
+	log.Println("Redirecting hash %s to %s", hash, url)
 	http.Redirect(w, r, url, 301)
 }
 
 // Get retrieves the URL corresponding to the requested hash.
 func (s *URLServer) Get(w http.ResponseWriter, r *http.Request) {
 	hash := mux.Vars(r)["hash"]
+	log.Println("Recieved Get request on REST server ; hash = %s", hash)
 	url, err := s.manager.Get(hash)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
+	log.Printf("Responding to Get request on REST server ; %s -> %s", hash, url)
 	writeResponse(w, url)
 }
 
@@ -135,24 +146,27 @@ func (s *URLServer) Add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Println("Recieved Add request on REST server ; url %s", url)
 	var hash string
 	hash, err = s.manager.Add(url)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
+	log.Printf("Responding to Add request on REST server ; %s -> %s", hash, url)
 	writeResponse(w, hash)
 }
 
 // Delete removes the requested hash and its associated URL.
 func (s *URLServer) Delete(w http.ResponseWriter, r *http.Request) {
 	var err error
-
 	hash := mux.Vars(r)["hash"]
+	log.Printf("Recieved Delete request on REST server ; hash = %s", hash)
 	err = s.manager.Delete(hash)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
+	log.Printf("Responding to Delete request on REST server ; hash = %s deleted", hash)
 	writeResponse(w, hash)
 }
