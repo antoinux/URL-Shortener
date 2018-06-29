@@ -1,0 +1,3 @@
+* Make the server multithreaded
+* Use proper logging
+* Build a front-end
