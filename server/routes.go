@@ -1,4 +1,4 @@
-package main
+package server
 
 // Route contains the structure of an endpoint.
 type Route struct {
@@ -11,7 +11,7 @@ type Route struct {
 // The liste of routes the API supports.
 // To add a new endpoint, add a new route here and a new function in
 // rest_server.go to handle the requests if necessary.
-var routes = []Route{
+var Routes = []Route{
 	Route{
 		Name:            "Get",
 		Method:          "GET",

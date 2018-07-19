@@ -1,4 +1,4 @@
-package main
+package manager
 
 import (
 	"fmt"
@@ -147,8 +147,7 @@ func (m *HashManager) setLowestFreeHash(url string) (hashInt int32) {
 
 // Add finds an available hash to be mapped to the given URL.
 // Returns the found hash.
-// Error if can't find a hash after maxTry tries to find a hash, or
-// URL is already known.
+// Error if can't find a hash , or URL is already known.
 func (m *HashManager) Add(url string) (hash string, err error) {
 	if url == "" {
 		return "", fmt.Errorf("Can't add the empty URL")

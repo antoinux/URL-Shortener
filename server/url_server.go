@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"encoding/json"
@@ -10,9 +10,10 @@ import (
 	"reflect"
 
 	"github.com/gorilla/mux"
+	"restful/manager"
 )
 
-var MAXJOBS int = 1
+var MAXJOBS int = 4
 
 // The RestServer listens and handles requests by updating the
 // Hash Manager.
@@ -20,23 +21,22 @@ var MAXJOBS int = 1
 type URLServer struct {
 	frontRouter *mux.Router
 	restRouter  *mux.Router
-	manager     *HashManager
+	manager     *manager.HashManager
 	jobQueue    chan Job
 }
 
-type Job struct {
-	ExecFunc     string
-	Request      *http.Request
-	Body         []byte
-	ResponseChan chan Result
-}
-
-type Result struct {
-	Response string
-	Err      error
-}
-
-func (s *URLServer) Worker() {
+func (s *URLServer) worker() {
+	// Explanation: worker waits for jobs on the jobQueue.
+	// When a job is here, we need to use reflection because the method to call
+	// is not static (this is on purpose) since it is a member function.
+	// Reflection is quite ugly, in particular for that last interface{}
+	// casting line.
+	//
+	// Moreover, we can't use the http.responseWriter and http.Request inside
+	// the worker since they are closed when the parent goroutine ends, so we
+	// need to send back the output via another channel.
+	// Note: we could use the http objects here, but the parent goroutine would
+	// have to wait anyway, so a channel is necessary.
 	for {
 		job := <-s.jobQueue
 		job.ResponseChan <- reflect.ValueOf(s).MethodByName(job.ExecFunc).Call(
@@ -48,13 +48,14 @@ func (s *URLServer) Worker() {
 	}
 }
 
-// NewRestServer returns a RestServer that is able to serve on the
-// specified routes.
+// NewURLServer returns a URLServer that is able to serve two types of
+// requests, the RESTful requests on the specified routes, and the
+// front end requests that need to be redirected.
 func NewURLServer(routes []Route) *URLServer {
 	log.Println("Building server")
 	frontRouter := mux.NewRouter().StrictSlash(true)
 	restRouter := mux.NewRouter().StrictSlash(true)
-	manager := NewHashManager()
+	manager := manager.NewHashManager()
 	server := &URLServer{
 		frontRouter: frontRouter,
 		restRouter:  restRouter,
@@ -108,13 +109,13 @@ func NewURLServer(routes []Route) *URLServer {
 		HandlerFunc(server.Redirect)
 
 	for i := 0; i < MAXJOBS; i++ {
-		go server.Worker()
+		go server.worker()
 	}
 
 	return server
 }
 
-// Start makes the RestServer start listening on the specified port number.
+// Start makes the URLServer start listening on the specified port numbers.
 func (s *URLServer) Start(frontPort int, restPort int) {
 	log.Printf("Front server listening on port %v\n", frontPort)
 	go func() {
@@ -124,28 +125,8 @@ func (s *URLServer) Start(frontPort int, restPort int) {
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%v", restPort), s.restRouter))
 }
 
-// writeResponse sends the request's response as json.
-// Panics if response can't be encoded as json.
-func writeResponse(w http.ResponseWriter, response string) {
-	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(map[string]string{"SUCCESS": response}); err != nil {
-		panic(err)
-	}
-}
-
-// handleError sends the error encountered during the request's processing.
-// Panics if err.Error() can't be encoded as json.
-func handleError(w http.ResponseWriter, err error) {
-	log.Printf("Error on REST server: %v", err)
-	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	w.WriteHeader(422)
-	if encodeErr := json.NewEncoder(w).
-		Encode(map[string]string{"ERROR": err.Error()}); encodeErr != nil {
-		panic(encodeErr)
-	}
-}
-
+// Redirect finds the URL corresponding to the given hash and issues
+// an HTTP redirect to it.
 func (s *URLServer) Redirect(w http.ResponseWriter, r *http.Request) {
 	hash := mux.Vars(r)["hash"]
 	log.Printf("Recieved redirect request on front server ; hash = %s\n", hash)
