@@ -8,7 +8,7 @@ import (
 
 type Job struct {
 	ExecFunc     string
-	Request      *http.Request
+	UrlArg       map[string]string
 	Body         []byte
 	ResponseChan chan Result
 }

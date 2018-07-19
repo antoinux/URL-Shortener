@@ -41,7 +41,7 @@ func (s *URLServer) worker() {
 		job := <-s.jobQueue
 		job.ResponseChan <- reflect.ValueOf(s).MethodByName(job.ExecFunc).Call(
 			[]reflect.Value{
-				reflect.ValueOf(job.Request),
+				reflect.ValueOf(job.UrlArg),
 				reflect.ValueOf(job.Body),
 			},
 		)[0].Interface().(Result)
@@ -77,6 +77,7 @@ func NewURLServer(routes []Route) *URLServer {
 				// Read here since the body is closed at the end of this
 				// routine.
 				body, err := ioutil.ReadAll(io.LimitReader(r.Body, 1048576))
+				arg := mux.Vars(r)
 				if err != nil {
 					handleError(w, err)
 					return
@@ -85,7 +86,7 @@ func NewURLServer(routes []Route) *URLServer {
 				responseChan := make(chan Result)
 				server.jobQueue <- Job{
 					ExecFunc:     funcName,
-					Request:      r,
+					UrlArg:       arg,
 					Body:         body,
 					ResponseChan: responseChan,
 				}
@@ -140,8 +141,8 @@ func (s *URLServer) Redirect(w http.ResponseWriter, r *http.Request) {
 }
 
 // Get retrieves the URL corresponding to the requested hash.
-func (s *URLServer) Get(r *http.Request, body []byte) Result {
-	hash := mux.Vars(r)["hash"]
+func (s *URLServer) Get(urlArg map[string]string, body []byte) Result {
+	hash := urlArg["hash"]
 	log.Printf("Recieved Get request on REST server ; hash = %s\n", hash)
 	url, err := s.manager.Get(hash)
 	if err != nil {
@@ -152,7 +153,7 @@ func (s *URLServer) Get(r *http.Request, body []byte) Result {
 }
 
 // Add inserts the requested URL and finds an available hash for it.
-func (s *URLServer) Add(r *http.Request, body []byte) Result {
+func (s *URLServer) Add(urlArg map[string]string, body []byte) Result {
 	var err error
 	var entry map[string]string
 
@@ -175,9 +176,9 @@ func (s *URLServer) Add(r *http.Request, body []byte) Result {
 }
 
 // Delete removes the requested hash and its associated URL.
-func (s *URLServer) Delete(r *http.Request, body []byte) Result {
+func (s *URLServer) Delete(urlArg map[string]string, body []byte) Result {
 	var err error
-	hash := mux.Vars(r)["hash"]
+	hash := urlArg["hash"]
 	log.Printf("Recieved Delete request on REST server ; hash = %s", hash)
 	err = s.manager.Delete(hash)
 	if err != nil {
