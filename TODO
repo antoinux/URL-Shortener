@@ -1,3 +1,2 @@
-* Make the server multithreaded
-* Use proper logging
 * Build a front-end
+* Write some consistent hashing code

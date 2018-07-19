@@ -12,6 +12,8 @@ import (
 	"github.com/gorilla/mux"
 )
 
+var MAXJOBS int = 1
+
 // The RestServer listens and handles requests by updating the
 // Hash Manager.
 // The requests are correctly processed thanks to its own Router.
@@ -19,6 +21,31 @@ type URLServer struct {
 	frontRouter *mux.Router
 	restRouter  *mux.Router
 	manager     *HashManager
+	jobQueue    chan Job
+}
+
+type Job struct {
+	ExecFunc     string
+	Request      *http.Request
+	Body         []byte
+	ResponseChan chan Result
+}
+
+type Result struct {
+	Response string
+	Err      error
+}
+
+func (s *URLServer) Worker() {
+	for {
+		job := <-s.jobQueue
+		job.ResponseChan <- reflect.ValueOf(s).MethodByName(job.ExecFunc).Call(
+			[]reflect.Value{
+				reflect.ValueOf(job.Request),
+				reflect.ValueOf(job.Body),
+			},
+		)[0].Interface().(Result)
+	}
 }
 
 // NewRestServer returns a RestServer that is able to serve on the
@@ -32,6 +59,7 @@ func NewURLServer(routes []Route) *URLServer {
 		frontRouter: frontRouter,
 		restRouter:  restRouter,
 		manager:     manager,
+		jobQueue:    make(chan Job),
 	}
 
 	log.Println("Routes for REST server:")
@@ -45,21 +73,43 @@ func NewURLServer(routes []Route) *URLServer {
 			Path(route.Pattern).
 			Name(route.Name).
 			HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				reflect.ValueOf(server).MethodByName(funcName).Call(
-					[]reflect.Value{
-						reflect.ValueOf(w),
-						reflect.ValueOf(r),
-					},
-				)
+				// Read here since the body is closed at the end of this
+				// routine.
+				body, err := ioutil.ReadAll(io.LimitReader(r.Body, 1048576))
+				if err != nil {
+					handleError(w, err)
+					return
+				}
+
+				responseChan := make(chan Result)
+				server.jobQueue <- Job{
+					ExecFunc:     funcName,
+					Request:      r,
+					Body:         body,
+					ResponseChan: responseChan,
+				}
+
+				// Write from here since the writer will be closed at the end
+				// of this routine.
+				result := <-responseChan
+				if result.Err != nil {
+					handleError(w, result.Err)
+				} else {
+					writeResponse(w, result.Response)
+				}
 			})
 	}
-
 	log.Println("Routes for front server:")
+	log.Printf("Use Route Redirect with Method GET on Path /{hash}.")
 	frontRouter.
 		Methods("GET").
 		Path("/{hash}").
 		Name("Redirect").
 		HandlerFunc(server.Redirect)
+
+	for i := 0; i < MAXJOBS; i++ {
+		go server.Worker()
+	}
 
 	return server
 }
@@ -98,75 +148,60 @@ func handleError(w http.ResponseWriter, err error) {
 
 func (s *URLServer) Redirect(w http.ResponseWriter, r *http.Request) {
 	hash := mux.Vars(r)["hash"]
-	log.Println("Recieved redirect request on front server ; hash = %s", hash)
+	log.Printf("Recieved redirect request on front server ; hash = %s\n", hash)
 	url, err := s.manager.Get(hash)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	log.Println("Redirecting hash %s to %s", hash, url)
+	log.Printf("Redirecting hash %s to %s\n", hash, url)
 	http.Redirect(w, r, url, 301)
 }
 
 // Get retrieves the URL corresponding to the requested hash.
-func (s *URLServer) Get(w http.ResponseWriter, r *http.Request) {
+func (s *URLServer) Get(r *http.Request, body []byte) Result {
 	hash := mux.Vars(r)["hash"]
-	log.Println("Recieved Get request on REST server ; hash = %s", hash)
+	log.Printf("Recieved Get request on REST server ; hash = %s\n", hash)
 	url, err := s.manager.Get(hash)
 	if err != nil {
-		handleError(w, err)
-		return
+		return Result{Err: err}
 	}
 	log.Printf("Responding to Get request on REST server ; %s -> %s", hash, url)
-	writeResponse(w, url)
+	return Result{Response: url}
 }
 
 // Add inserts the requested URL and finds an available hash for it.
-func (s *URLServer) Add(w http.ResponseWriter, r *http.Request) {
+func (s *URLServer) Add(r *http.Request, body []byte) Result {
 	var err error
-	var body []byte
-	body, err = ioutil.ReadAll(io.LimitReader(r.Body, 1048576))
-	if err != nil {
-		handleError(w, err)
-		return
-	}
-	if err = r.Body.Close(); err != nil {
-		handleError(w, err)
-		return
-	}
-
 	var entry map[string]string
+
 	if err = json.Unmarshal(body, &entry); err != nil {
-		handleError(w, err)
-		return
+		return Result{Err: err}
 	}
 	url, ok := entry["URL"]
 	if !ok {
-		handleError(w, fmt.Errorf("No field \"URL\" in request."))
-		return
+		return Result{Err: fmt.Errorf("No field \"URL\" in request.")}
 	}
 
-	log.Println("Recieved Add request on REST server ; url %s", url)
+	log.Printf("Recieved Add request on REST server ; url %s\n", url)
 	var hash string
 	hash, err = s.manager.Add(url)
 	if err != nil {
-		handleError(w, err)
-		return
+		return Result{Err: err}
 	}
 	log.Printf("Responding to Add request on REST server ; %s -> %s", hash, url)
-	writeResponse(w, hash)
+	return Result{Response: hash}
 }
 
 // Delete removes the requested hash and its associated URL.
-func (s *URLServer) Delete(w http.ResponseWriter, r *http.Request) {
+func (s *URLServer) Delete(r *http.Request, body []byte) Result {
 	var err error
 	hash := mux.Vars(r)["hash"]
 	log.Printf("Recieved Delete request on REST server ; hash = %s", hash)
 	err = s.manager.Delete(hash)
 	if err != nil {
-		handleError(w, err)
-		return
+		return Result{Err: err}
 	}
 	log.Printf("Responding to Delete request on REST server ; hash = %s deleted", hash)
-	writeResponse(w, hash)
+	return Result{Response: hash}
 }
